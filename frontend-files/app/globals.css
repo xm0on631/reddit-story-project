@@ -4,13 +4,13 @@
 
 /* Change these to re-theme the whole site */
 :root {
-  --bg: #050505;           /* near-black page background */
-  --surface: #0d0d0e;      /* panels, cards - just barely lifted off bg */
-  --surface-hover: #17171a;
-  --input: #232326;        /* upload/filter fields - visibly lighter so they read as inputs */
-  --border: #2a2a2d;
-  --text: #eaeaea;
-  --accent: #7c5cff;       /* main brand color - buttons, highlights */
+  --bg: #000000;           /* pure black page background */
+  --surface: #111111;      /* panels, cards - subtle lift */
+  --surface-hover: #1a1a1a;
+  --input: #1a1a1a;        /* fields and controls */
+  --border: #d1d1d1;       /* light gray borders */
+  --text: #d9d9d9;         /* muted white/gray text */
+  --accent: #1a1a1a;       /* dark gray buttons */
 }
 
 body {
