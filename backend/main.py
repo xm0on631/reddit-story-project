@@ -3,6 +3,7 @@ import json
 import random
 import sqlite3
 from datetime import datetime
+from typing import Optional, Dict, List
 
 from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -73,20 +74,71 @@ def mark_viewed(post_id: str, status: str):
     conn.close()
 
 
+def parse_comments(raw: str) -> Dict[str, List[dict]]:
+    """Parse a comments .jsonl dump and group comments by their parent post id."""
+    by_post: Dict[str, List[dict]] = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            c = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        body = c.get("body", "")
+        if not body or body in ("[removed]", "[deleted]"):
+            continue
+
+        # Reddit dumps usually store link_id as "t3_<post_id>" - strip any prefix.
+        link_id = str(c.get("link_id", ""))
+        post_id = link_id.split("_")[-1] if link_id else ""
+        if not post_id:
+            continue
+
+        words_count = len(body.split())
+        date_str = "Unknown Date"
+        created_utc = c.get("created_utc")
+        if created_utc:
+            try:
+                date_str = datetime.fromtimestamp(int(created_utc)).strftime("%Y-%m-%d")
+            except (ValueError, OSError):
+                pass
+
+        comment = {
+            "id": str(c.get("id", "")),
+            "text": body,
+            "words": words_count,
+            "score": c.get("score", 0),
+            "date": date_str,
+            "author": c.get("author", ""),
+        }
+        by_post.setdefault(post_id, []).append(comment)
+    return by_post
+
+
 @app.post("/api/parse")
 async def parse_dump(
-    file: UploadFile = File(...),
+    posts: UploadFile = File(...),
+    comments: Optional[UploadFile] = File(None),
     min_words: int = Form(1),
     max_words: int = Form(1000),
     min_score: int = Form(1),
     keyword: str = Form(""),
     x_app_password: str = Header(default=""),
 ):
+    """Parse an uploaded posts (+ optional comments) dump, filter, link, shuffle, return."""
     require_password(x_app_password)
-    """Parse an uploaded .jsonl dump, filter it, skip already-viewed posts, shuffle, return."""
+
     viewed_ids = get_viewed_ids()
+
+    comments_by_post: Dict[str, List[dict]] = {}
+    if comments is not None:
+        comments_raw = (await comments.read()).decode("utf-8", errors="ignore")
+        comments_by_post = parse_comments(comments_raw)
+
     stories = []
-    raw = (await file.read()).decode("utf-8", errors="ignore")
+    raw = (await posts.read()).decode("utf-8", errors="ignore")
 
     for line in raw.splitlines():
         line = line.strip()
@@ -133,6 +185,9 @@ async def parse_dump(
                 "score": score,
                 "date": date_str,
                 "url": post.get("url", ""),
+                "author": post.get("author", ""),
+                "subreddit": post.get("subreddit", ""),
+                "comments": comments_by_post.get(post_id, []),
             }
         )
 
