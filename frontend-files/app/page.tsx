@@ -222,6 +222,71 @@ export default function Home() {
     );
   }
 
+  const isReviewingApprovedStory = Boolean(reviewingCartId && cartStory);
+
+  if (isReviewingApprovedStory) {
+    return (
+      <div className="min-h-screen bg-[var(--bg)] text-[var(--text)] p-4 md:p-8">
+        <div className="mx-auto max-w-5xl">
+          <div className="mb-5 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-[0.2em] opacity-60">Approved Story</p>
+              <h1 className="text-2xl font-bold mt-1">{cartStory.title}</h1>
+            </div>
+            <button
+              onClick={() => {
+                setReviewingCartId(null);
+                setEditMode(false);
+              }}
+              className="bg-[var(--surface)] border border-[var(--border)] rounded px-4 py-2 text-sm hover:bg-[var(--surface-hover)]"
+            >
+              Назад
+            </button>
+          </div>
+
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 md:p-6">
+            <div className="mb-4 text-xs opacity-70">
+              Words: {cartStory.words} | Upvotes: {cartStory.score} | Date: {cartStory.date}
+              {cartStory.url && (
+                <>
+                  {" · "}
+                  <a href={cartStory.url} target="_blank" className="underline">
+                    Post Link
+                  </a>
+                </>
+              )}
+            </div>
+
+            <textarea
+              value={draftText}
+              onChange={(e) => setDraftText(e.target.value)}
+              rows={18}
+              className="w-full bg-[var(--input)] border border-[var(--border)] rounded p-4 leading-relaxed text-base resize-none"
+            />
+
+            <div className="mt-5 flex gap-3">
+              <button
+                onClick={saveCartEdit}
+                className="flex-1 bg-[var(--accent)] text-white rounded py-3 font-medium"
+              >
+                Сохранить
+              </button>
+              <button
+                onClick={() => {
+                  setReviewingCartId(null);
+                  setEditMode(false);
+                }}
+                className="flex-1 bg-[var(--surface-hover)] border border-[var(--border)] rounded py-3 font-medium"
+              >
+                Назад
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-h-screen bg-[var(--bg)] text-[var(--text)]">
       {/* LEFT SIDEBAR */}
@@ -345,7 +410,7 @@ export default function Home() {
       </div>
 
       {/* MAIN PANEL */}
-      <div className="flex-1 p-8 max-w-3xl mx-auto w-full">
+      <div className="flex-1 px-6 py-8 md:px-10 md:py-12 max-w-4xl mx-auto w-full leading-relaxed">
         <h1 className="text-3xl font-bold mb-6">Reddit Story Tool</h1>
 
         {!currentStory && (
@@ -359,12 +424,26 @@ export default function Home() {
             <div className="flex justify-between items-start gap-4 mb-1">
               <h2 className="text-xl font-semibold">{currentStory.title}</h2>
               <button
-                onClick={
-                  cartStory ? () => openCartItem(cartStory.id) : startEditQueueStory
-                }
+                onClick={() => {
+                  if (editMode) {
+                    setEditMode(false);
+                    return;
+                  }
+
+                  if (cartStory) {
+                    setDraftText(cartStory.text);
+                    setEditMode(true);
+                    return;
+                  }
+
+                  if (queueStory) {
+                    setDraftText(queueStory.text);
+                    setEditMode(true);
+                  }
+                }}
                 className="text-sm shrink-0 opacity-80 hover:opacity-100"
               >
-                ✏️ Edit
+                {editMode ? "👁️ View" : "✏️ Edit"}
               </button>
             </div>
             <p className="text-xs opacity-60 mb-4">
