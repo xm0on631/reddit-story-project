@@ -153,6 +153,17 @@ async def mark(req: MarkRequest, x_app_password: str = Header(default="")):
     return {"ok": True}
 
 
+@app.delete("/api/mark/{post_id}")
+async def unmark(post_id: str, x_app_password: str = Header(default="")):
+    """Undo: remove a post's viewed record so it can show up again."""
+    require_password(x_app_password)
+    conn = get_db()
+    conn.execute("DELETE FROM viewed_posts WHERE post_id = ?", (post_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
 @app.get("/api/health")
 async def health():
     return {"ok": True}
