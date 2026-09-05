@@ -1,6 +1,18 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import {
+  Edit3,
+  Eye,
+  Save,
+  Trash2,
+  Download,
+  Settings as SettingsIcon,
+  Undo2,
+  ChevronDown,
+  ChevronRight,
+  X,
+} from "lucide-react";
 
 interface Story {
   id: string;
@@ -10,6 +22,139 @@ interface Story {
   score: number;
   date: string;
   url: string;
+  approvedBy?: string;
+}
+
+interface AppSettings {
+  accent: "neutral" | "blue" | "emerald" | "amber" | "rose";
+  fontSize: "sm" | "base" | "lg";
+  density: "comfortable" | "compact";
+  wpm: number;
+  hotkeysEnabled: boolean;
+  confirmSkip: boolean;
+  displayName: string;
+}
+
+interface UndoAction {
+  type: "approved" | "skipped";
+  story: Story;
+  index: number;
+}
+
+const DEFAULT_SETTINGS: AppSettings = {
+  accent: "neutral",
+  fontSize: "base",
+  density: "comfortable",
+  wpm: 150,
+  hotkeysEnabled: true,
+  confirmSkip: false,
+  displayName: "",
+};
+
+const SETTINGS_KEY = "rst_settings";
+const FILTERS_KEY = "rst_default_filters";
+
+const ACCENTS: Record<
+  AppSettings["accent"],
+  { label: string; button: string; solid: string; ring: string }
+> = {
+  neutral: {
+    label: "Neutral",
+    button: "bg-neutral-800 hover:bg-white/10 border-neutral-700",
+    solid: "bg-neutral-400",
+    ring: "ring-neutral-400",
+  },
+  blue: {
+    label: "Blue",
+    button: "bg-blue-950 hover:bg-blue-900 border-blue-800",
+    solid: "bg-blue-500",
+    ring: "ring-blue-500",
+  },
+  emerald: {
+    label: "Emerald",
+    button: "bg-emerald-950 hover:bg-emerald-900 border-emerald-800",
+    solid: "bg-emerald-500",
+    ring: "ring-emerald-500",
+  },
+  amber: {
+    label: "Amber",
+    button: "bg-amber-950 hover:bg-amber-900 border-amber-800",
+    solid: "bg-amber-500",
+    ring: "ring-amber-500",
+  },
+  rose: {
+    label: "Rose",
+    button: "bg-rose-950 hover:bg-rose-900 border-rose-800",
+    solid: "bg-rose-500",
+    ring: "ring-rose-500",
+  },
+};
+
+const FONT_SIZE_CLASS: Record<AppSettings["fontSize"], string> = {
+  sm: "text-sm",
+  base: "text-base",
+  lg: "text-lg",
+};
+
+function loadJSON<T>(key: string, fallback: T): T {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? { ...fallback, ...JSON.parse(raw) } : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function estimateDuration(words: number, wpm: number): string {
+  const safeWpm = wpm > 0 ? wpm : 150;
+  const minutes = words / safeWpm;
+  if (minutes < 1) {
+    const seconds = Math.max(1, Math.round(minutes * 60));
+    return `~${seconds} sec`;
+  }
+  const rounded = Math.round(minutes * 2) / 2;
+  return `~${rounded % 1 === 0 ? rounded.toFixed(0) : rounded.toFixed(1)} min`;
+}
+
+function highlightText(text: string, keyword: string) {
+  const kw = keyword.trim();
+  if (!kw) return text;
+  const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const regex = new RegExp(`(${escaped})`, "gi");
+  const parts = text.split(regex);
+  return parts.map((part, i) =>
+    part.toLowerCase() === kw.toLowerCase() ? (
+      <mark key={i} className="bg-amber-500/20 text-amber-200 rounded px-0.5">
+        {part}
+      </mark>
+    ) : (
+      <span key={i}>{part}</span>
+    )
+  );
+}
+
+function Toggle({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <button
+      onClick={() => onChange(!checked)}
+      className={`w-10 h-6 rounded-full transition-colors relative shrink-0 ${
+        checked ? "bg-white/30" : "bg-neutral-800"
+      }`}
+    >
+      <span
+        className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${
+          checked ? "translate-x-4" : "translate-x-0"
+        }`}
+      />
+    </button>
+  );
 }
 
 // Point this at your backend. In Codespaces, forward port 8000 and paste that URL here.
@@ -59,14 +204,46 @@ export default function Home() {
     return { "X-App-Password": localStorage.getItem("app_password") || "" };
   }
 
-  // --- filters / upload panel ---
+  // --- settings ---
+  const [settings, setSettings] = useState<AppSettings>(() =>
+    loadJSON(SETTINGS_KEY, DEFAULT_SETTINGS)
+  );
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  }, [settings]);
+
+  function updateSetting<K extends keyof AppSettings>(key: K, value: AppSettings[K]) {
+    setSettings((s) => ({ ...s, [key]: value }));
+  }
+
+  // --- toast ---
+  const [toast, setToast] = useState<{ message: string; type: "error" | "info" } | null>(null);
+  function showToast(message: string, type: "error" | "info" = "info") {
+    setToast({ message, type });
+  }
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 4000);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  // --- filters / upload panel (defaults persisted across visits) ---
+  const savedFilters = loadJSON(FILTERS_KEY, { minWords: 1, maxWords: 1000, minScore: 1 });
   const [filtersOpen, setFiltersOpen] = useState(true);
   const [file, setFile] = useState<File | null>(null);
-  const [minWords, setMinWords] = useState(1);
-  const [maxWords, setMaxWords] = useState(1000);
-  const [minScore, setMinScore] = useState(1);
+  const [minWords, setMinWords] = useState(savedFilters.minWords);
+  const [maxWords, setMaxWords] = useState(savedFilters.maxWords);
+  const [minScore, setMinScore] = useState(savedFilters.minScore);
   const [keyword, setKeyword] = useState("");
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    localStorage.setItem(FILTERS_KEY, JSON.stringify({ minWords, maxWords, minScore }));
+  }, [minWords, maxWords, minScore]);
 
   // --- story queue ---
   const [stories, setStories] = useState<Story[]>([]);
@@ -80,6 +257,9 @@ export default function Home() {
   const [editMode, setEditMode] = useState(false);
   const [draftText, setDraftText] = useState("");
   const [reviewingCartId, setReviewingCartId] = useState<string | null>(null);
+
+  // --- undo ---
+  const [undoStack, setUndoStack] = useState<UndoAction[]>([]);
 
   const queueStory = stories[currentIndex];
   const cartStory = reviewingCartId
@@ -108,8 +288,9 @@ export default function Home() {
       setCurrentIndex(0);
       setReviewingCartId(null);
       setEditMode(false);
+      setUndoStack([]);
     } catch (e) {
-      alert("Не удалось связаться с бэкендом. Проверь, что он запущен и API_URL верный.");
+      showToast("Не удалось связаться с бэкендом. Проверь, что он запущен и API_URL верный.", "error");
     } finally {
       setLoading(false);
     }
@@ -127,11 +308,28 @@ export default function Home() {
     }
   }
 
+  async function unmarkPost(post_id: string) {
+    try {
+      await fetch(`${API_URL}/api/mark/${encodeURIComponent(post_id)}`, {
+        method: "DELETE",
+        headers: authHeader(),
+      });
+    } catch {
+      // Non-fatal.
+    }
+  }
+
   function approve() {
     if (!queueStory) return;
     const finalText = editMode && draftText ? draftText : queueStory.text;
-    setCart((c) => [...c, { ...queueStory, text: finalText }]);
+    const approvedStory: Story = {
+      ...queueStory,
+      text: finalText,
+      approvedBy: settings.displayName || undefined,
+    };
+    setCart((c) => [...c, approvedStory]);
     markPost(queueStory.id, "approved");
+    setUndoStack((u) => [...u, { type: "approved", story: queueStory, index: currentIndex }]);
     setCurrentIndex((i) => i + 1);
     setEditMode(false);
     setDraftText("");
@@ -139,10 +337,33 @@ export default function Home() {
 
   function skip() {
     if (!queueStory) return;
+    if (settings.confirmSkip && typeof window !== "undefined") {
+      if (!window.confirm("Скипнуть эту историю?")) return;
+    }
     markPost(queueStory.id, "skipped");
+    setUndoStack((u) => [...u, { type: "skipped", story: queueStory, index: currentIndex }]);
     setCurrentIndex((i) => i + 1);
     setEditMode(false);
     setDraftText("");
+  }
+
+  function performUndo() {
+    if (undoStack.length === 0) return;
+    const last = undoStack[undoStack.length - 1];
+    setUndoStack((u) => u.slice(0, -1));
+    if (last.type === "approved") {
+      setCart((c) => {
+        const idx = [...c].reverse().findIndex((s) => s.id === last.story.id);
+        if (idx === -1) return c;
+        const realIdx = c.length - 1 - idx;
+        return c.filter((_, i) => i !== realIdx);
+      });
+    }
+    unmarkPost(last.story.id);
+    setCurrentIndex(last.index);
+    setReviewingCartId(null);
+    setEditMode(false);
+    showToast(`Отменено: ${last.story.title}`, "info");
   }
 
   function removeFromCart(id: string) {
@@ -192,6 +413,49 @@ export default function Home() {
     setCart([]);
   }
 
+  // --- keyboard shortcuts ---
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (!settings.hotkeysEnabled || settingsOpen) return;
+      const target = e.target as HTMLElement;
+      const isTyping = target.tagName === "INPUT" || target.tagName === "TEXTAREA";
+
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+        e.preventDefault();
+        if (cartStory) {
+          saveCartEdit();
+        } else if (editMode) {
+          setEditMode(false);
+        }
+        return;
+      }
+
+      if (isTyping || !currentStory) return;
+
+      const key = e.key.toLowerCase();
+      if (key === "a" && !cartStory) {
+        e.preventDefault();
+        approve();
+      } else if (key === "s" && !cartStory) {
+        e.preventDefault();
+        skip();
+      } else if (key === "e") {
+        e.preventDefault();
+        if (editMode) {
+          setEditMode(false);
+        } else if (cartStory) {
+          setDraftText(cartStory.text);
+          setEditMode(true);
+        } else if (queueStory) {
+          setDraftText(queueStory.text);
+          setEditMode(true);
+        }
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  });
+
   if (checkingAuth) {
     return <div className="min-h-screen bg-black" />;
   }
@@ -213,7 +477,7 @@ export default function Home() {
           {authError && <p className="text-red-400 text-sm mb-3">{authError}</p>}
           <button
             onClick={handleLogin}
-            className="w-full bg-neutral-800 hover:bg-white/10 border border-neutral-700 text-white rounded-lg py-2 font-medium transition-colors"
+            className={`w-full border text-white rounded-lg py-2 font-medium transition-colors ${ACCENTS[settings.accent].button}`}
           >
             Enter
           </button>
@@ -222,10 +486,167 @@ export default function Home() {
     );
   }
 
+  const cardPadding = settings.density === "compact" ? "p-5" : "p-8";
+  const fontSizeClass = FONT_SIZE_CLASS[settings.fontSize];
+  const progressPct = stories.length > 0 ? Math.min(100, (currentIndex / stories.length) * 100) : 0;
+
   return (
     <div className="flex min-h-screen bg-black text-neutral-300">
+      {/* TOAST */}
+      {toast && (
+        <div
+          className={`fixed top-4 right-4 z-50 max-w-sm rounded-lg border px-4 py-3 text-sm shadow-lg ${
+            toast.type === "error"
+              ? "bg-red-950 border-red-800 text-red-200"
+              : "bg-neutral-900 border-neutral-700 text-neutral-200"
+          }`}
+        >
+          {toast.message}
+        </div>
+      )}
+
+      {/* SETTINGS MODAL */}
+      {settingsOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+          onClick={() => setSettingsOpen(false)}
+        >
+          <div
+            className="bg-neutral-950 border border-neutral-800 rounded-xl p-6 w-96 max-h-[85vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="text-lg font-semibold text-white">Settings</h3>
+              <button
+                onClick={() => setSettingsOpen(false)}
+                className="text-neutral-500 hover:text-white transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-5">
+              <div>
+                <label className="text-xs text-neutral-500 block mb-2">Accent Color</label>
+                <div className="flex gap-2">
+                  {(Object.keys(ACCENTS) as AppSettings["accent"][]).map((key) => (
+                    <button
+                      key={key}
+                      onClick={() => updateSetting("accent", key)}
+                      title={ACCENTS[key].label}
+                      className={`w-7 h-7 rounded-full transition-all ${ACCENTS[key].solid} ${
+                        settings.accent === key
+                          ? `ring-2 ring-offset-2 ring-offset-neutral-950 ${ACCENTS[key].ring}`
+                          : "opacity-50 hover:opacity-100"
+                      }`}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs text-neutral-500 block mb-2">Text Size</label>
+                <div className="flex gap-2">
+                  {(["sm", "base", "lg"] as const).map((size) => (
+                    <button
+                      key={size}
+                      onClick={() => updateSetting("fontSize", size)}
+                      className={`flex-1 rounded-lg py-1.5 text-sm border transition-colors ${
+                        settings.fontSize === size
+                          ? "bg-neutral-800 border-neutral-600 text-white"
+                          : "bg-transparent border-neutral-800 text-neutral-500 hover:text-neutral-300"
+                      }`}
+                    >
+                      {size === "sm" ? "Small" : size === "base" ? "Medium" : "Large"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs text-neutral-500 block mb-2">Density</label>
+                <div className="flex gap-2">
+                  {(["comfortable", "compact"] as const).map((d) => (
+                    <button
+                      key={d}
+                      onClick={() => updateSetting("density", d)}
+                      className={`flex-1 rounded-lg py-1.5 text-sm border transition-colors capitalize ${
+                        settings.density === d
+                          ? "bg-neutral-800 border-neutral-600 text-white"
+                          : "bg-transparent border-neutral-800 text-neutral-500 hover:text-neutral-300"
+                      }`}
+                    >
+                      {d === "comfortable" ? "Comfortable" : "Compact"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs text-neutral-500 block mb-2">
+                  Voiceover speed (words/min)
+                </label>
+                <input
+                  type="number"
+                  value={settings.wpm}
+                  onChange={(e) => updateSetting("wpm", Number(e.target.value) || 150)}
+                  className="w-full bg-neutral-800 border border-neutral-700 text-neutral-200 rounded-lg px-2 py-1.5 focus:outline-none focus:border-neutral-600"
+                />
+                <p className="text-[11px] text-neutral-600 mt-1">
+                  Используется для оценки длительности озвучки рядом со счётчиком слов.
+                </p>
+              </div>
+
+              <div>
+                <label className="text-xs text-neutral-500 block mb-2">Your name (optional)</label>
+                <input
+                  type="text"
+                  value={settings.displayName}
+                  onChange={(e) => updateSetting("displayName", e.target.value)}
+                  placeholder="e.g. Alex"
+                  className="w-full bg-neutral-800 border border-neutral-700 text-neutral-200 placeholder-neutral-600 rounded-lg px-2 py-1.5 focus:outline-none focus:border-neutral-600"
+                />
+                <p className="text-[11px] text-neutral-600 mt-1">
+                  Будет отмечено рядом с историями, которые ты одобришь в корзине.
+                </p>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-neutral-300">Hotkeys (A / S / E)</span>
+                <Toggle
+                  checked={settings.hotkeysEnabled}
+                  onChange={(v) => updateSetting("hotkeysEnabled", v)}
+                />
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-neutral-300">Confirm before Skip</span>
+                <Toggle
+                  checked={settings.confirmSkip}
+                  onChange={(v) => updateSetting("confirmSkip", v)}
+                />
+              </div>
+
+              <p className="text-[11px] text-neutral-600 pt-3 border-t border-neutral-800">
+                Значения фильтров слева (Min/Max Words, Min Upvotes) сохраняются автоматически и
+                подставятся при следующем заходе.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* LEFT SIDEBAR */}
       <div className="flex flex-col w-72 bg-neutral-950 border-r border-neutral-800 shrink-0">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-800">
+          <span className="text-sm font-semibold text-white">Reddit Story Tool</span>
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className="text-neutral-500 hover:text-white transition-colors"
+          >
+            <SettingsIcon size={18} />
+          </button>
+        </div>
+
         {/* Filters / upload — collapsible */}
         <div className="border-b border-neutral-800">
           <button
@@ -233,7 +654,11 @@ export default function Home() {
             className="w-full flex justify-between items-center px-4 py-3 text-sm font-medium text-neutral-300 hover:bg-neutral-900 transition-colors"
           >
             <span className="uppercase tracking-wide text-xs text-neutral-500">Dump &amp; Filters</span>
-            <span className="text-neutral-600">{filtersOpen ? "▾" : "▸"}</span>
+            {filtersOpen ? (
+              <ChevronDown size={16} className="text-neutral-600" />
+            ) : (
+              <ChevronRight size={16} className="text-neutral-600" />
+            )}
           </button>
           {filtersOpen && (
             <div className="px-4 pb-4 space-y-3">
@@ -284,14 +709,22 @@ export default function Home() {
               <button
                 onClick={handleUpload}
                 disabled={!file || loading}
-                className="w-full bg-neutral-800 hover:bg-white/10 disabled:opacity-30 disabled:hover:bg-neutral-800 border border-neutral-700 text-white rounded-lg py-2 font-medium transition-colors"
+                className={`w-full border text-white rounded-lg py-2 font-medium transition-colors disabled:opacity-30 ${ACCENTS[settings.accent].button}`}
               >
                 {loading ? "Loading..." : "Load and Shuffle"}
               </button>
               {stories.length > 0 && (
-                <p className="text-xs text-neutral-500">
-                  Found {stories.length} new stories · reviewed {currentIndex}
-                </p>
+                <div className="space-y-1">
+                  <p className="text-xs text-neutral-500">
+                    {Math.min(currentIndex, stories.length)} / {stories.length} reviewed
+                  </p>
+                  <div className="w-full h-1.5 bg-neutral-800 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full ${ACCENTS[settings.accent].solid} transition-all`}
+                      style={{ width: `${progressPct}%` }}
+                    />
+                  </div>
+                </div>
               )}
             </div>
           )}
@@ -304,7 +737,11 @@ export default function Home() {
             className="w-full flex justify-between items-center px-4 py-3 text-sm font-medium text-neutral-300 hover:bg-neutral-900 transition-colors"
           >
             <span className="uppercase tracking-wide text-xs text-neutral-500">Cart ({cart.length})</span>
-            <span className="text-neutral-600">{cartOpen ? "▾" : "▸"}</span>
+            {cartOpen ? (
+              <ChevronDown size={16} className="text-neutral-600" />
+            ) : (
+              <ChevronRight size={16} className="text-neutral-600" />
+            )}
           </button>
           {cartOpen && (
             <div className="px-4 pb-4 space-y-2 max-h-72 overflow-y-auto">
@@ -322,21 +759,24 @@ export default function Home() {
                     title={s.title}
                   >
                     {s.title}
+                    {s.approvedBy && (
+                      <span className="text-[10px] text-neutral-600 ml-1">· {s.approvedBy}</span>
+                    )}
                   </button>
                   <button
                     onClick={() => removeFromCart(s.id)}
-                    className="text-neutral-600 hover:text-red-400 text-xs shrink-0 transition-colors"
+                    className="text-neutral-600 hover:text-red-400 shrink-0 transition-colors"
                   >
-                    ✕
+                    <Trash2 size={14} />
                   </button>
                 </div>
               ))}
               {cart.length > 0 && (
                 <button
                   onClick={downloadCart}
-                  className="w-full bg-neutral-800 hover:bg-white/10 border border-neutral-700 text-white rounded-lg py-2 mt-2 font-medium transition-colors"
+                  className={`w-full flex items-center justify-center gap-2 border text-white rounded-lg py-2 mt-2 font-medium transition-colors ${ACCENTS[settings.accent].button}`}
                 >
-                  DOWNLOAD SCRIPT (.txt)
+                  <Download size={16} /> DOWNLOAD SCRIPT (.txt)
                 </button>
               )}
             </div>
@@ -346,7 +786,19 @@ export default function Home() {
 
       {/* MAIN PANEL */}
       <div className="flex-1 px-6 py-8 md:px-10 md:py-12 max-w-4xl mx-auto w-full leading-relaxed">
-        <h1 className="text-3xl font-semibold text-white tracking-tight mb-8">Reddit Story Tool</h1>
+        <h1 className="text-3xl font-semibold text-white tracking-tight mb-4">Reddit Story Tool</h1>
+
+        {undoStack.length > 0 && (
+          <button
+            onClick={performUndo}
+            className="mb-6 inline-flex items-center gap-1.5 text-xs text-neutral-500 hover:text-white transition-colors"
+          >
+            <Undo2 size={14} />
+            Undo last (
+            {undoStack[undoStack.length - 1].type === "approved" ? "approve" : "skip"}:{" "}
+            {undoStack[undoStack.length - 1].story.title})
+          </button>
+        )}
 
         {!currentStory && (
           <p className="text-neutral-500">
@@ -355,7 +807,7 @@ export default function Home() {
         )}
 
         {currentStory && (
-          <div className="bg-neutral-950 border border-neutral-800 rounded-xl p-8">
+          <div className={`bg-neutral-950 border border-neutral-800 rounded-xl ${cardPadding}`}>
             <div className="flex justify-between items-start gap-4 mb-2">
               <h2 className="text-2xl font-semibold text-white tracking-tight">{currentStory.title}</h2>
               <button
@@ -364,26 +816,32 @@ export default function Home() {
                     setEditMode(false);
                     return;
                   }
-
                   if (cartStory) {
                     setDraftText(cartStory.text);
                     setEditMode(true);
                     return;
                   }
-
                   if (queueStory) {
                     setDraftText(queueStory.text);
                     setEditMode(true);
                   }
                 }}
-                className="text-sm shrink-0 text-neutral-500 hover:text-white transition-colors"
+                className="text-sm shrink-0 text-neutral-500 hover:text-white transition-colors inline-flex items-center gap-1"
               >
-                {editMode ? "👁️ View" : "✏️ Edit"}
+                {editMode ? (
+                  <>
+                    <Eye size={14} /> View
+                  </>
+                ) : (
+                  <>
+                    <Edit3 size={14} /> Edit
+                  </>
+                )}
               </button>
             </div>
             <p className="text-xs text-neutral-500 mb-6">
-              Words: {currentStory.words} | Upvotes: {currentStory.score} | Date:{" "}
-              {currentStory.date}
+              Words: {currentStory.words} ({estimateDuration(currentStory.words, settings.wpm)}) |
+              Upvotes: {currentStory.score} | Date: {currentStory.date}
               {currentStory.url && (
                 <>
                   {" · "}
@@ -403,11 +861,11 @@ export default function Home() {
                 value={draftText}
                 onChange={(e) => setDraftText(e.target.value)}
                 rows={14}
-                className="w-full bg-neutral-800 border border-neutral-700 text-neutral-200 rounded-lg p-4 leading-relaxed focus:outline-none focus:border-neutral-600"
+                className={`w-full bg-neutral-800 border border-neutral-700 text-neutral-200 rounded-lg p-4 leading-relaxed focus:outline-none focus:border-neutral-600 ${fontSizeClass}`}
               />
             ) : (
-              <p className="whitespace-pre-wrap leading-relaxed text-neutral-300 text-base">
-                {currentStory.text}
+              <p className={`whitespace-pre-wrap leading-relaxed text-neutral-300 ${fontSizeClass}`}>
+                {keyword.trim() ? highlightText(currentStory.text, keyword) : currentStory.text}
               </p>
             )}
 
@@ -415,15 +873,15 @@ export default function Home() {
               {cartStory ? (
                 <button
                   onClick={saveCartEdit}
-                  className="flex-1 bg-neutral-800 hover:bg-white/10 border border-neutral-700 text-white rounded-lg py-2 font-medium transition-colors"
+                  className={`flex-1 flex items-center justify-center gap-2 border text-white rounded-lg py-2 font-medium transition-colors ${ACCENTS[settings.accent].button}`}
                 >
-                  💾 Save Edits
+                  <Save size={16} /> Save Edits
                 </button>
               ) : (
                 <>
                   <button
                     onClick={approve}
-                    className="flex-1 bg-neutral-800 hover:bg-white/10 border border-neutral-700 text-white rounded-lg py-2 font-medium transition-colors"
+                    className={`flex-1 border text-white rounded-lg py-2 font-medium transition-colors ${ACCENTS[settings.accent].button}`}
                   >
                     APPROVE
                   </button>
