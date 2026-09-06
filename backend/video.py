@@ -3,8 +3,7 @@ import shutil
 import tempfile
 from typing import Optional
 
-import requests
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
@@ -12,74 +11,6 @@ from starlette.background import BackgroundTask
 from auth import require_password
 
 router = APIRouter(prefix="/api/video", tags=["video"])
-
-REDDIT_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/json",
-    "Accept-Language": "en-US,en;q=0.9",
-}
-
-
-@router.get("/discover")
-async def discover(
-    subreddit: str = Query(...),
-    sort: str = Query("top"),
-    t: str = Query("week"),
-    limit: int = Query(30),
-    x_app_password: str = Header(default=""),
-):
-    """Live-browse a subreddit's public JSON listing (no Reddit API key needed)
-    and keep only actual video posts."""
-    require_password(x_app_password)
-
-    sort = sort if sort in ("top", "hot", "new") else "top"
-    url = f"https://www.reddit.com/r/{subreddit}/{sort}.json"
-    params = {"limit": max(1, min(limit, 100))}
-    if sort == "top":
-        params["t"] = t
-
-    try:
-        resp = requests.get(url, headers=REDDIT_HEADERS, params=params, timeout=10)
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"Не удалось получить данные с Reddit: {e}")
-
-    data = resp.json()
-    clips = []
-    for child in data.get("data", {}).get("children", []):
-        post = child.get("data", {}) or {}
-        if not post.get("is_video"):
-            continue
-
-        media = post.get("media") or {}
-        reddit_video = media.get("reddit_video") or {}
-
-        thumb = post.get("thumbnail", "")
-        if not str(thumb).startswith("http"):
-            thumb = ""
-
-        clips.append(
-            {
-                "id": post.get("id", ""),
-                "title": post.get("title", ""),
-                "score": post.get("score", 0),
-                "num_comments": post.get("num_comments", 0),
-                "author": post.get("author", ""),
-                "subreddit": post.get("subreddit", ""),
-                "permalink": f"https://www.reddit.com{post.get('permalink', '')}",
-                "thumbnail": thumb,
-                "duration": reddit_video.get("duration", 0),
-                "width": reddit_video.get("width", 0),
-                "height": reddit_video.get("height", 0),
-                "preview_url": reddit_video.get("fallback_url", ""),
-                "created_utc": post.get("created_utc", 0),
-            }
-        )
-
-    return {"clips": clips, "count": len(clips)}
 
 
 class ResolveRequest(BaseModel):
