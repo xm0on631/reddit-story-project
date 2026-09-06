@@ -3,11 +3,14 @@ import json
 import random
 import sqlite3
 from datetime import datetime
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Iterator
 
 from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+from auth import APP_PASSWORD, require_password
+from video import router as video_router
 
 app = FastAPI(title="Reddit Story Tool API")
 
@@ -19,17 +22,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(video_router)
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "viewed.db")
-
-# One shared password for the whole tool (no per-user accounts).
-# Set this as an environment variable in Codespaces / wherever you deploy:
-#   export APP_PASSWORD="whatever-you-want"
-APP_PASSWORD = os.environ.get("APP_PASSWORD", "changeme")
-
-
-def require_password(x_app_password: str = Header(default="")):
-    if x_app_password != APP_PASSWORD:
-        raise HTTPException(status_code=401, detail="Wrong password")
 
 
 class LoginRequest(BaseModel):
@@ -74,26 +69,38 @@ def mark_viewed(post_id: str, status: str):
     conn.close()
 
 
-def parse_comments(raw: str) -> Dict[str, List[dict]]:
-    """Parse a comments .jsonl dump and group comments by their parent post id."""
+def iter_lines(upload: UploadFile) -> Iterator[str]:
+    """Read an uploaded file line by line without ever holding the whole thing
+    in memory at once - large files (Starlette spools >1MB to disk automatically)
+    are streamed straight from disk instead of being read into one giant string."""
+    upload.file.seek(0)
+    for raw_line in upload.file:
+        try:
+            line = raw_line.decode("utf-8", errors="ignore").strip()
+        except AttributeError:
+            line = str(raw_line).strip()
+        if line:
+            yield line
+
+
+def parse_comments(upload: UploadFile, accepted_post_ids: set) -> Dict[str, List[dict]]:
+    """Parse a comments .jsonl dump and group comments by parent post id.
+    Only comments belonging to a post we actually kept are stored, so a huge
+    comments dump doesn't balloon memory when most posts got filtered out."""
     by_post: Dict[str, List[dict]] = {}
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
+    for line in iter_lines(upload):
         try:
             c = json.loads(line)
         except json.JSONDecodeError:
             continue
 
-        body = c.get("body", "")
-        if not body or body in ("[removed]", "[deleted]"):
-            continue
-
-        # Reddit dumps usually store link_id as "t3_<post_id>" - strip any prefix.
         link_id = str(c.get("link_id", ""))
         post_id = link_id.split("_")[-1] if link_id else ""
-        if not post_id:
+        if not post_id or post_id not in accepted_post_ids:
+            continue
+
+        body = c.get("body", "")
+        if not body or body in ("[removed]", "[deleted]"):
             continue
 
         words_count = len(body.split())
@@ -131,19 +138,9 @@ async def parse_dump(
     require_password(x_app_password)
 
     viewed_ids = get_viewed_ids()
-
-    comments_by_post: Dict[str, List[dict]] = {}
-    if comments is not None:
-        comments_raw = (await comments.read()).decode("utf-8", errors="ignore")
-        comments_by_post = parse_comments(comments_raw)
-
     stories = []
-    raw = (await posts.read()).decode("utf-8", errors="ignore")
 
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
+    for line in iter_lines(posts):
         try:
             post = json.loads(line)
         except json.JSONDecodeError:
@@ -187,9 +184,17 @@ async def parse_dump(
                 "url": post.get("url", ""),
                 "author": post.get("author", ""),
                 "subreddit": post.get("subreddit", ""),
-                "comments": comments_by_post.get(post_id, []),
             }
         )
+
+    if comments is not None:
+        accepted_ids = {s["id"] for s in stories}
+        comments_by_post = parse_comments(comments, accepted_ids)
+        for s in stories:
+            s["comments"] = comments_by_post.get(s["id"], [])
+    else:
+        for s in stories:
+            s["comments"] = []
 
     random.shuffle(stories)
     return {"stories": stories, "count": len(stories)}
