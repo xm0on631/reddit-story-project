@@ -13,7 +13,14 @@ from auth import require_password
 
 router = APIRouter(prefix="/api/video", tags=["video"])
 
-REDDIT_HEADERS = {"User-Agent": "reddit-story-tool/1.0 (personal use, 2 users)"}
+REDDIT_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 
 @router.get("/discover")
