@@ -53,19 +53,53 @@ export default function VideoPage() {
     setDiscoverError("");
     setSelectedIds(new Set());
     try {
-      const params = new URLSearchParams({ subreddit: subreddit.trim(), sort, limit: "30" });
+      const params = new URLSearchParams({ limit: "30" });
       if (sort === "top") params.set("t", timeRange);
-      const res = await fetch(`${API_URL}/api/video/discover?${params.toString()}`, {
-        headers: authHeader(),
-      });
+      const url = `https://www.reddit.com/r/${encodeURIComponent(
+        subreddit.trim()
+      )}/${sort}.json?${params.toString()}`;
+
+      const res = await fetch(url);
       if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || "Ошибка запроса");
+        throw new Error(`Reddit ответил ${res.status}`);
       }
       const data = await res.json();
-      setClips(data.clips);
+      const children = data?.data?.children || [];
+
+      const parsed: VideoClip[] = children
+        .map((child: any) => child.data)
+        .filter((post: any) => post && post.is_video)
+        .map((post: any) => {
+          const media = post.media || {};
+          const rv = media.reddit_video || {};
+          const thumb =
+            typeof post.thumbnail === "string" && post.thumbnail.startsWith("http")
+              ? post.thumbnail
+              : "";
+          return {
+            id: post.id || "",
+            title: post.title || "",
+            score: post.score || 0,
+            num_comments: post.num_comments || 0,
+            author: post.author || "",
+            subreddit: post.subreddit || "",
+            permalink: `https://www.reddit.com${post.permalink || ""}`,
+            thumbnail: thumb,
+            duration: rv.duration || 0,
+            width: rv.width || 0,
+            height: rv.height || 0,
+            preview_url: rv.fallback_url || "",
+            created_utc: post.created_utc || 0,
+          };
+        });
+
+      setClips(parsed);
     } catch (e) {
-      setDiscoverError(e instanceof Error ? e.message : "Не удалось загрузить ленту");
+      setDiscoverError(
+        e instanceof Error
+          ? `Не удалось загрузить ленту: ${e.message}`
+          : "Не удалось загрузить ленту"
+      );
       setClips([]);
     } finally {
       setLoadingDiscover(false);
