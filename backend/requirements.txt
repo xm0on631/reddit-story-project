@@ -1,5 +1,6 @@
 fastapi
 uvicorn[standard]
 python-multipart
-requests
 yt-dlp
+zstandard
+imageio-ffmpeg
