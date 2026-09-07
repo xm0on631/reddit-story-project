@@ -3,12 +3,12 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Search, Download, Play, Check, Loader2 } from "lucide-react";
+import { Download, Play, Check, Loader2, ExternalLink } from "lucide-react";
 import { useAuth, API_URL } from "@/lib/useAuth";
 import { VideoClip, ResolvedVideo } from "@/lib/video-types";
 
 function formatSeconds(sec: number): string {
-  if (!sec) return "0:00";
+  if (!sec) return "";
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return `${m}:${s.toString().padStart(2, "0")}`;
@@ -24,6 +24,14 @@ async function saveBlobResponse(res: Response, fallbackName: string) {
   URL.revokeObjectURL(url);
 }
 
+function downloadTargetUrl(clip: VideoClip): string {
+  // Reddit-hosted video needs the thread permalink (yt-dlp's Reddit
+  // extractor merges the separate audio/video DASH streams from there).
+  // An off-site link (YouTube/TikTok/etc in post.url) should be fed
+  // directly to yt-dlp instead.
+  return clip.is_video || clip.domain === "v.redd.it" ? clip.permalink : clip.url;
+}
+
 export default function VideoPage() {
   const { authed, checkingAuth, authHeader } = useAuth();
   const router = useRouter();
@@ -32,77 +40,47 @@ export default function VideoPage() {
     if (!checkingAuth && !authed) router.replace("/");
   }, [checkingAuth, authed, router]);
 
-  const [activeTab, setActiveTab] = useState<"discover" | "quickadd">("discover");
+  const [activeTab, setActiveTab] = useState<"catalog" | "quickadd">("catalog");
 
-  // --- Discover ---
-  const [subreddit, setSubreddit] = useState("");
-  const [sort, setSort] = useState<"top" | "hot" | "new">("top");
-  const [timeRange, setTimeRange] = useState("week");
+  // --- Catalog (local dump, same pattern as Stories) ---
+  const [postsFile, setPostsFile] = useState<File | null>(null);
+  const [minScore, setMinScore] = useState(1000);
+  const [subredditFilter, setSubredditFilter] = useState("");
   const [clips, setClips] = useState<VideoClip[]>([]);
-  const [loadingDiscover, setLoadingDiscover] = useState(false);
-  const [discoverError, setDiscoverError] = useState("");
+  const [loadingParse, setLoadingParse] = useState(false);
+  const [parseError, setParseError] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [previewingId, setPreviewingId] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [batchDownloading, setBatchDownloading] = useState(false);
   const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0 });
 
-  async function fetchDiscover() {
-    if (!subreddit.trim()) return;
-    setLoadingDiscover(true);
-    setDiscoverError("");
+  async function handleParseDump() {
+    if (!postsFile) return;
+    setLoadingParse(true);
+    setParseError("");
     setSelectedIds(new Set());
+    const form = new FormData();
+    form.append("posts", postsFile);
+    form.append("min_score", String(minScore));
+    form.append("subreddit", subredditFilter);
     try {
-      const params = new URLSearchParams({ limit: "30" });
-      if (sort === "top") params.set("t", timeRange);
-      const url = `https://www.reddit.com/r/${encodeURIComponent(
-        subreddit.trim()
-      )}/${sort}.json?${params.toString()}`;
-
-      const res = await fetch(url);
+      const res = await fetch(`${API_URL}/api/video/parse-dump`, {
+        method: "POST",
+        headers: authHeader(),
+        body: form,
+      });
       if (!res.ok) {
-        throw new Error(`Reddit ответил ${res.status}`);
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Ошибка запроса");
       }
       const data = await res.json();
-      const children = data?.data?.children || [];
-
-      const parsed: VideoClip[] = children
-        .map((child: any) => child.data)
-        .filter((post: any) => post && post.is_video)
-        .map((post: any) => {
-          const media = post.media || {};
-          const rv = media.reddit_video || {};
-          const thumb =
-            typeof post.thumbnail === "string" && post.thumbnail.startsWith("http")
-              ? post.thumbnail
-              : "";
-          return {
-            id: post.id || "",
-            title: post.title || "",
-            score: post.score || 0,
-            num_comments: post.num_comments || 0,
-            author: post.author || "",
-            subreddit: post.subreddit || "",
-            permalink: `https://www.reddit.com${post.permalink || ""}`,
-            thumbnail: thumb,
-            duration: rv.duration || 0,
-            width: rv.width || 0,
-            height: rv.height || 0,
-            preview_url: rv.fallback_url || "",
-            created_utc: post.created_utc || 0,
-          };
-        });
-
-      setClips(parsed);
+      setClips(data.clips);
     } catch (e) {
-      setDiscoverError(
-        e instanceof Error
-          ? `Не удалось загрузить ленту: ${e.message}`
-          : "Не удалось загрузить ленту"
-      );
+      setParseError(e instanceof Error ? e.message : "Не удалось обработать дамп");
       setClips([]);
     } finally {
-      setLoadingDiscover(false);
+      setLoadingParse(false);
     }
   }
 
@@ -117,12 +95,16 @@ export default function VideoPage() {
 
   async function downloadClip(clip: VideoClip) {
     setDownloadingId(clip.id);
-    setDiscoverError("");
+    setParseError("");
     try {
       const res = await fetch(`${API_URL}/api/video/download`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeader() },
-        body: JSON.stringify({ url: clip.permalink, title: clip.title }),
+        body: JSON.stringify({
+          url: downloadTargetUrl(clip),
+          title: clip.title,
+          post_id: clip.id,
+        }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -130,7 +112,7 @@ export default function VideoPage() {
       }
       await saveBlobResponse(res, `${clip.title.slice(0, 60)}.mp4`);
     } catch (e) {
-      setDiscoverError(
+      setParseError(
         `Не удалось скачать "${clip.title}": ${e instanceof Error ? e.message : "ошибка"}`
       );
     } finally {
@@ -151,7 +133,7 @@ export default function VideoPage() {
     setSelectedIds(new Set());
   }
 
-  // --- Quick Add ---
+  // --- Quick Add (paste any link - unaffected by the Reddit-API situation) ---
   const [urlInput, setUrlInput] = useState("");
   const [resolving, setResolving] = useState(false);
   const [resolveError, setResolveError] = useState("");
@@ -220,12 +202,12 @@ export default function VideoPage() {
 
         <div className="flex gap-1 bg-neutral-900 border border-neutral-800 rounded-lg p-1 w-fit mb-8">
           <button
-            onClick={() => setActiveTab("discover")}
+            onClick={() => setActiveTab("catalog")}
             className={`px-4 py-1.5 text-sm rounded-md transition-colors ${
-              activeTab === "discover" ? "bg-neutral-800 text-white" : "text-neutral-500 hover:text-neutral-300"
+              activeTab === "catalog" ? "bg-neutral-800 text-white" : "text-neutral-500 hover:text-neutral-300"
             }`}
           >
-            Discover
+            Каталог из дампа
           </button>
           <button
             onClick={() => setActiveTab("quickadd")}
@@ -237,50 +219,50 @@ export default function VideoPage() {
           </button>
         </div>
 
-        {activeTab === "discover" && (
+        {activeTab === "catalog" && (
           <div>
-            <div className="flex flex-wrap gap-2 mb-4">
-              <input
-                type="text"
-                value={subreddit}
-                onChange={(e) => setSubreddit(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && fetchDiscover()}
-                placeholder="Сабреддит, например: instantkarma"
-                className="flex-1 min-w-[200px] bg-neutral-900 border border-neutral-800 text-neutral-200 placeholder-neutral-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-neutral-600"
-              />
-              <select
-                value={sort}
-                onChange={(e) => setSort(e.target.value as typeof sort)}
-                className="bg-neutral-900 border border-neutral-800 text-neutral-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:border-neutral-600"
-              >
-                <option value="top">Top</option>
-                <option value="hot">Hot</option>
-                <option value="new">New</option>
-              </select>
-              {sort === "top" && (
-                <select
-                  value={timeRange}
-                  onChange={(e) => setTimeRange(e.target.value)}
-                  className="bg-neutral-900 border border-neutral-800 text-neutral-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:border-neutral-600"
-                >
-                  <option value="day">Day</option>
-                  <option value="week">Week</option>
-                  <option value="month">Month</option>
-                  <option value="year">Year</option>
-                  <option value="all">All time</option>
-                </select>
-              )}
+            <div className="flex flex-wrap items-end gap-2 mb-4">
+              <div>
+                <label className="text-xs text-neutral-500 block mb-1">Дамп постов (.jsonl / .zst)</label>
+                <input
+                  type="file"
+                  accept=".jsonl,.zst"
+                  onChange={(e) => setPostsFile(e.target.files?.[0] || null)}
+                  className="text-sm text-neutral-400 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-neutral-800 file:bg-neutral-900 file:text-neutral-300 file:text-xs"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-neutral-500 block mb-1">Min Score</label>
+                <input
+                  type="number"
+                  value={minScore}
+                  onChange={(e) => setMinScore(Number(e.target.value))}
+                  className="w-28 bg-neutral-800 border border-neutral-700 text-neutral-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-neutral-600"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-neutral-500 block mb-1">Subreddit (опц.)</label>
+                <input
+                  type="text"
+                  value={subredditFilter}
+                  onChange={(e) => setSubredditFilter(e.target.value)}
+                  placeholder="instantkarma"
+                  className="w-40 bg-neutral-800 border border-neutral-700 text-neutral-200 placeholder-neutral-600 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-neutral-600"
+                />
+              </div>
               <button
-                onClick={fetchDiscover}
-                disabled={!subreddit.trim() || loadingDiscover}
+                onClick={handleParseDump}
+                disabled={!postsFile || loadingParse}
                 className="flex items-center gap-2 bg-neutral-800 hover:bg-white/10 border border-neutral-700 disabled:opacity-30 text-white rounded-lg px-4 py-2 text-sm font-medium transition-colors"
               >
-                <Search size={16} /> {loadingDiscover ? "Loading..." : "Search"}
+                {loadingParse ? "Loading..." : "Load and Filter"}
               </button>
             </div>
 
-            {discoverError && (
-              <p className="text-red-400 text-sm mb-4">{discoverError}</p>
+            {parseError && <p className="text-red-400 text-sm mb-4">{parseError}</p>}
+
+            {clips.length > 0 && (
+              <p className="text-xs text-neutral-500 mb-4">Найдено видео-постов: {clips.length}</p>
             )}
 
             {selectedIds.size > 0 && (
@@ -298,9 +280,10 @@ export default function VideoPage() {
               </div>
             )}
 
-            {!loadingDiscover && clips.length === 0 && !discoverError && (
+            {!loadingParse && clips.length === 0 && !parseError && (
               <p className="text-neutral-500">
-                Введи название сабреддита и нажми Search, чтобы увидеть видео-посты.
+                Загрузи .jsonl или .zst дамп постов (Arctic Shift / Pushshift), укажи минимальный
+                score — и получишь каталог видео-постов из него.
               </p>
             )}
 
@@ -309,13 +292,14 @@ export default function VideoPage() {
                 const isSelected = selectedIds.has(clip.id);
                 const isPreviewing = previewingId === clip.id;
                 const isDownloadingThis = downloadingId === clip.id;
+                const hasPlayablePreview = Boolean(clip.preview_url);
                 return (
                   <div
                     key={clip.id}
                     className="bg-neutral-950 border border-neutral-800 rounded-xl overflow-hidden"
                   >
                     <div className="relative aspect-video bg-neutral-900">
-                      {isPreviewing && clip.preview_url ? (
+                      {isPreviewing && hasPlayablePreview ? (
                         <video
                           src={clip.preview_url}
                           controls
@@ -325,7 +309,11 @@ export default function VideoPage() {
                         />
                       ) : (
                         <button
-                          onClick={() => setPreviewingId(clip.id)}
+                          onClick={() =>
+                            hasPlayablePreview
+                              ? setPreviewingId(clip.id)
+                              : window.open(clip.permalink || clip.url, "_blank")
+                          }
                           className="w-full h-full flex items-center justify-center"
                         >
                           {clip.thumbnail ? (
@@ -338,11 +326,17 @@ export default function VideoPage() {
                             <div className="w-full h-full bg-neutral-900" />
                           )}
                           <span className="absolute inset-0 flex items-center justify-center bg-black/30">
-                            <Play size={28} className="text-white" />
+                            {hasPlayablePreview ? (
+                              <Play size={28} className="text-white" />
+                            ) : (
+                              <ExternalLink size={22} className="text-white" />
+                            )}
                           </span>
-                          <span className="absolute bottom-1.5 right-1.5 bg-black/70 text-white text-[10px] px-1.5 py-0.5 rounded">
-                            {formatSeconds(clip.duration)}
-                          </span>
+                          {clip.duration > 0 && (
+                            <span className="absolute bottom-1.5 right-1.5 bg-black/70 text-white text-[10px] px-1.5 py-0.5 rounded">
+                              {formatSeconds(clip.duration)}
+                            </span>
+                          )}
                         </button>
                       )}
                       <button
@@ -359,20 +353,30 @@ export default function VideoPage() {
                     <div className="p-3">
                       <p className="text-sm text-white line-clamp-2 mb-1">{clip.title}</p>
                       <p className="text-xs text-neutral-500 mb-3">
-                        r/{clip.subreddit} · {clip.score} upvotes · {clip.num_comments} comments
+                        r/{clip.subreddit} · {clip.score} upvotes · {clip.num_comments} comments ·{" "}
+                        {clip.date}
                       </p>
-                      <button
-                        onClick={() => downloadClip(clip)}
-                        disabled={isDownloadingThis}
-                        className="w-full flex items-center justify-center gap-2 bg-neutral-800 hover:bg-white/10 border border-neutral-700 disabled:opacity-40 text-white rounded-lg py-1.5 text-sm transition-colors"
-                      >
-                        {isDownloadingThis ? (
-                          <Loader2 size={14} className="animate-spin" />
-                        ) : (
-                          <Download size={14} />
-                        )}
-                        {isDownloadingThis ? "Скачивание..." : "Download"}
-                      </button>
+                      <div className="flex gap-2">
+                        <a
+                          href={clip.permalink || clip.url}
+                          target="_blank"
+                          className="flex-1 flex items-center justify-center gap-1.5 border border-neutral-800 hover:bg-white/5 text-neutral-300 rounded-lg py-1.5 text-xs transition-colors"
+                        >
+                          <ExternalLink size={12} /> Thread
+                        </a>
+                        <button
+                          onClick={() => downloadClip(clip)}
+                          disabled={isDownloadingThis}
+                          className="flex-1 flex items-center justify-center gap-1.5 bg-neutral-800 hover:bg-white/10 border border-neutral-700 disabled:opacity-40 text-white rounded-lg py-1.5 text-xs transition-colors"
+                        >
+                          {isDownloadingThis ? (
+                            <Loader2 size={12} className="animate-spin" />
+                          ) : (
+                            <Download size={12} />
+                          )}
+                          {isDownloadingThis ? "..." : "Download"}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );
@@ -430,10 +434,6 @@ export default function VideoPage() {
                   )}
                   {downloadingQuick ? "Скачивание..." : "Download"}
                 </button>
-                <p className="text-[11px] text-neutral-600 mt-2">
-                  Превью без видео-плеера: часть площадок не отдаёт ссылку, которую можно
-                  проигрывать прямо в браузере до скачивания.
-                </p>
               </div>
             )}
           </div>

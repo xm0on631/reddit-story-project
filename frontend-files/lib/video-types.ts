@@ -2,16 +2,17 @@ export interface VideoClip {
   id: string;
   title: string;
   score: number;
-  num_comments: number;
+  url: string;
+  permalink: string;
   author: string;
   subreddit: string;
-  permalink: string;
+  num_comments: number;
+  date: string;
+  is_video: boolean;
+  domain: string;
   thumbnail: string;
-  duration: number;
-  width: number;
-  height: number;
   preview_url: string;
-  created_utc: number;
+  duration: number;
 }
 
 export interface ResolvedVideo {
