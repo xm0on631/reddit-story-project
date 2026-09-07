@@ -55,6 +55,70 @@ export default function VideoPage() {
   const [batchDownloading, setBatchDownloading] = useState(false);
   const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0 });
 
+  // --- secondary filters, applied client-side to the already-loaded catalog ---
+  const [searchQuery, setSearchQuery] = useState("");
+  const [sortMode, setSortMode] = useState<"score" | "newest" | "oldest" | "duration" | "comments">(
+    "score"
+  );
+  const [minDuration, setMinDuration] = useState(0);
+  const [maxDuration, setMaxDuration] = useState(0);
+  const [minComments, setMinComments] = useState(0);
+  const [verticalOnly, setVerticalOnly] = useState(false);
+
+  async function markClip(post_id: string, status: "approved" | "skipped") {
+    try {
+      await fetch(`${API_URL}/api/mark`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeader() },
+        body: JSON.stringify({ post_id, status }),
+      });
+    } catch {
+      // Non-fatal.
+    }
+  }
+
+  function skipClip(clip: VideoClip) {
+    markClip(clip.id, "skipped");
+    setClips((c) => c.filter((x) => x.id !== clip.id));
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.delete(clip.id);
+      return next;
+    });
+  }
+
+  function getDisplayedClips(): VideoClip[] {
+    let list = clips.filter((c) => {
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        if (!c.title.toLowerCase().includes(q) && !c.subreddit.toLowerCase().includes(q)) {
+          return false;
+        }
+      }
+      if (minComments > 0 && c.num_comments < minComments) return false;
+      if (c.duration > 0) {
+        if (minDuration > 0 && c.duration < minDuration) return false;
+        if (maxDuration > 0 && c.duration > maxDuration) return false;
+      }
+      if (verticalOnly && c.width > 0 && c.height > 0 && c.width >= c.height) return false;
+      return true;
+    });
+
+    switch (sortMode) {
+      case "newest":
+        return [...list].sort((a, b) => b.date.localeCompare(a.date));
+      case "oldest":
+        return [...list].sort((a, b) => a.date.localeCompare(b.date));
+      case "duration":
+        return [...list].sort((a, b) => b.duration - a.duration);
+      case "comments":
+        return [...list].sort((a, b) => b.num_comments - a.num_comments);
+      case "score":
+      default:
+        return [...list].sort((a, b) => b.score - a.score);
+    }
+  }
+
   async function handleParseDump() {
     if (!postsFile) return;
     setLoadingParse(true);
@@ -111,6 +175,13 @@ export default function VideoPage() {
         throw new Error(err.detail || "Не удалось скачать");
       }
       await saveBlobResponse(res, `${clip.title.slice(0, 60)}.mp4`);
+      markClip(clip.id, "approved");
+      setClips((c) => c.filter((x) => x.id !== clip.id));
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(clip.id);
+        return next;
+      });
     } catch (e) {
       setParseError(
         `Не удалось скачать "${clip.title}": ${e instanceof Error ? e.message : "ошибка"}`
@@ -232,7 +303,7 @@ export default function VideoPage() {
                 />
               </div>
               <div>
-                <label className="text-xs text-neutral-500 block mb-1">Min Score</label>
+                <label className="text-xs text-neutral-500 block mb-1">Min Score (апвоуты)</label>
                 <input
                   type="number"
                   value={minScore}
@@ -261,8 +332,89 @@ export default function VideoPage() {
 
             {parseError && <p className="text-red-400 text-sm mb-4">{parseError}</p>}
 
+            <p className="text-[11px] text-neutral-600 mb-4">
+              Score = апвоуты минус даунвоуты на Reddit. 1000 — просто ориентир на "залетевший"
+              пост, не жёсткий стандарт: где-то и 200 будет много, где-то и 5000 — обычное дело.
+              Настраивай под конкретный сабреддит.
+            </p>
+
             {clips.length > 0 && (
-              <p className="text-xs text-neutral-500 mb-4">Найдено видео-постов: {clips.length}</p>
+              <div className="flex flex-wrap items-end gap-2 mb-4 pb-4 border-b border-neutral-800">
+                <div>
+                  <label className="text-xs text-neutral-500 block mb-1">Поиск</label>
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="по заголовку..."
+                    className="w-40 bg-neutral-900 border border-neutral-800 text-neutral-200 placeholder-neutral-600 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-neutral-600"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-neutral-500 block mb-1">Сортировка</label>
+                  <select
+                    value={sortMode}
+                    onChange={(e) => setSortMode(e.target.value as typeof sortMode)}
+                    className="bg-neutral-900 border border-neutral-800 text-neutral-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-neutral-600"
+                  >
+                    <option value="score">By Score</option>
+                    <option value="newest">Newest</option>
+                    <option value="oldest">Oldest</option>
+                    <option value="duration">Longest first</option>
+                    <option value="comments">Most Comments</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-neutral-500 block mb-1">Min sec</label>
+                  <input
+                    type="number"
+                    value={minDuration || ""}
+                    onChange={(e) => setMinDuration(Number(e.target.value))}
+                    className="w-20 bg-neutral-800 border border-neutral-700 text-neutral-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-neutral-600"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-neutral-500 block mb-1">Max sec</label>
+                  <input
+                    type="number"
+                    value={maxDuration || ""}
+                    onChange={(e) => setMaxDuration(Number(e.target.value))}
+                    placeholder="∞"
+                    className="w-20 bg-neutral-800 border border-neutral-700 text-neutral-200 placeholder-neutral-600 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-neutral-600"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-neutral-500 block mb-1">Min comments</label>
+                  <input
+                    type="number"
+                    value={minComments || ""}
+                    onChange={(e) => setMinComments(Number(e.target.value))}
+                    className="w-24 bg-neutral-800 border border-neutral-700 text-neutral-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-neutral-600"
+                  />
+                </div>
+                <label className="flex items-center gap-2 text-sm text-neutral-400 cursor-pointer pb-1.5">
+                  <input
+                    type="checkbox"
+                    checked={verticalOnly}
+                    onChange={(e) => setVerticalOnly(e.target.checked)}
+                    className="accent-neutral-500"
+                  />
+                  Только вертикальные
+                </label>
+              </div>
+            )}
+
+            {clips.length > 0 && (
+              <p className="text-xs text-neutral-500 mb-2">
+                Показано {getDisplayedClips().length} из {clips.length} найденных
+              </p>
+            )}
+            {(minDuration > 0 || maxDuration > 0) && (
+              <p className="text-[11px] text-neutral-600 mb-4">
+                Фильтр по длительности работает только там, где длительность известна из дампа
+                (обычно reddit-hosted видео) — внешние ссылки без известной длительности не
+                скрываются.
+              </p>
             )}
 
             {selectedIds.size > 0 && (
@@ -288,7 +440,7 @@ export default function VideoPage() {
             )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {clips.map((clip) => {
+              {getDisplayedClips().map((clip) => {
                 const isSelected = selectedIds.has(clip.id);
                 const isPreviewing = previewingId === clip.id;
                 const isDownloadingThis = downloadingId === clip.id;
@@ -375,6 +527,13 @@ export default function VideoPage() {
                             <Download size={12} />
                           )}
                           {isDownloadingThis ? "..." : "Download"}
+                        </button>
+                        <button
+                          onClick={() => skipClip(clip)}
+                          title="Скипнуть — больше не покажется"
+                          className="px-2.5 border border-neutral-800 hover:bg-white/5 hover:text-red-400 text-neutral-500 rounded-lg text-xs transition-colors"
+                        >
+                          ✕
                         </button>
                       </div>
                     </div>

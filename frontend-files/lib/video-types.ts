@@ -13,6 +13,8 @@ export interface VideoClip {
   thumbnail: string;
   preview_url: string;
   duration: number;
+  width: number;
+  height: number;
 }
 
 export interface ResolvedVideo {
