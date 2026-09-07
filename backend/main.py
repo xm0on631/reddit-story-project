@@ -1,7 +1,5 @@
-import os
 import json
 import random
-import sqlite3
 from datetime import datetime
 from typing import Optional, Dict, List, Iterator
 
@@ -10,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from auth import APP_PASSWORD, require_password
+from db import get_db, get_viewed_ids, mark_viewed
 from video import router as video_router
 
 app = FastAPI(title="Reddit Story Tool API")
@@ -24,8 +23,6 @@ app.add_middleware(
 
 app.include_router(video_router)
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "viewed.db")
-
 
 class LoginRequest(BaseModel):
     password: str
@@ -36,37 +33,6 @@ async def login(req: LoginRequest):
     if req.password != APP_PASSWORD:
         raise HTTPException(status_code=401, detail="Wrong password")
     return {"ok": True}
-
-
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS viewed_posts (
-            post_id TEXT PRIMARY KEY,
-            status TEXT,
-            viewed_at TEXT
-        )
-        """
-    )
-    return conn
-
-
-def get_viewed_ids() -> set:
-    conn = get_db()
-    rows = conn.execute("SELECT post_id FROM viewed_posts").fetchall()
-    conn.close()
-    return {r[0] for r in rows}
-
-
-def mark_viewed(post_id: str, status: str):
-    conn = get_db()
-    conn.execute(
-        "INSERT OR REPLACE INTO viewed_posts (post_id, status, viewed_at) VALUES (?, ?, ?)",
-        (post_id, status, datetime.utcnow().isoformat()),
-    )
-    conn.commit()
-    conn.close()
 
 
 def iter_lines(upload: UploadFile) -> Iterator[str]:

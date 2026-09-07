@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from auth import require_password
+from db import get_viewed_ids
 
 router = APIRouter(prefix="/api/video", tags=["video"])
 
@@ -98,11 +99,16 @@ async def parse_dump(
     and (optionally) subreddit. No Reddit API/scraping involved at all."""
     require_password(x_app_password)
 
+    viewed_ids = get_viewed_ids()
     clips = []
     for line in iter_dump_lines(posts):
         try:
             post = json.loads(line)
         except json.JSONDecodeError:
+            continue
+
+        post_id = post.get("id", "")
+        if not post_id or post_id in viewed_ids:
             continue
 
         score = post.get("score", 0)
@@ -149,6 +155,8 @@ async def parse_dump(
                 "thumbnail": thumb,
                 "preview_url": reddit_video.get("fallback_url", ""),
                 "duration": reddit_video.get("duration", 0),
+                "width": reddit_video.get("width", 0),
+                "height": reddit_video.get("height", 0),
             }
         )
 
